@@ -150,61 +150,127 @@ with visao:
     source = base.groupby('origem', as_index=False).agg(valor=('valor', 'sum'), vendas=('valor', 'size')).sort_values('valor', ascending=False)
     st.dataframe(source.rename(columns={'origem':'Origem', 'valor':'Valor vendido (R$)', 'vendas':'Vendas'}), hide_index=True, use_container_width=True)
 
+def service_stats(frame, prefix):
+    result = {}
+    for category, slug in [('Reabilitação', 'Reabilitação'), ('Recovery', 'Recovery')]:
+        part = frame[frame['categoria'] == category]
+        result[f'{prefix} {slug} (nº)'] = len(part)
+        result[f'{prefix} {slug} (R$)'] = float(part['valor'].sum())
+        result[f'{prefix} Ticket {slug} (R$)'] = float(part['valor'].mean()) if len(part) else None
+    return result
+
+
+def month_series(frame, all_months, label):
+    grouped = frame.groupby('mes').agg(faturamento=('valor', 'sum'), quantidade=('valor', 'size'))
+    grouped = grouped.reindex(all_months, fill_value=0).reset_index().rename(columns={'index': 'mes'})
+    grouped['Dimensão'] = label
+    return grouped
+
+
 with equipe:
-    st.subheader('Comparativo entre fisioterapeutas')
-    st.caption('Vendas: campo Fisioterapeuta. Indicações: campo Indicação, independentemente de quem fechou a venda.')
+    st.subheader('Ranking e comparativo dos fisioterapeutas')
+    st.caption('Vendas fechadas = coluna Fisioterapeuta. Indicações geradas = coluna Indicação. Uma venda pode constar nas duas dimensões; não some seus faturamentos.')
     available = sorted(set(base['fisio'].map(team_name)) | set(base['indicador'].map(team_name)))
     defaults = [name for name in TEAM if name in available]
     chosen = st.multiselect('Profissionais a comparar', available, default=defaults or available, key='team_select')
     rows = []
     for name in chosen:
-        sold = base[base['fisio'].map(norm) == norm(name)]
-        referred = base[base['indicador'].map(norm) == norm(name)]
-        m = metrics(sold)
-        rows.append({'Fisioterapeuta': name, 'Vendas': m['vendas'], 'Valor vendido (R$)': m['valor'],
-                     'Ticket médio (R$)': m['ticket'], 'Indicações (vendas)': len(referred),
-                     'Valor das indicações (R$)': float(referred['valor'].sum()),
-                     'Reabilitações >10 (%)': round(m['percentual_longo'], 1) if m['percentual_longo'] is not None else None,
-                     'Sessões vendidas (informadas)': float(sold['sessoes'].sum()) if sold['sessoes'].notna().any() else None})
+        sold = base[base['fisio_key'] == norm(name)]
+        referred = base[base['indicador_key'] == norm(name)]
+        ms, mi = metrics(sold), metrics(referred)
+        row = {'Fisioterapeuta': name,
+               'Vendas fechadas (nº)': ms['vendas'], 'Faturamento vendido (R$)': ms['valor'],
+               'Ticket vendas (R$)': ms['ticket'] if ms['vendas'] else None,
+               'Indicações geradas (nº)': mi['vendas'], 'Faturamento indicado (R$)': mi['valor'],
+               'Ticket indicações (R$)': mi['ticket'] if mi['vendas'] else None,
+               'Reabilitações >10 (%)': round(ms['percentual_longo'], 1) if ms['percentual_longo'] is not None else None,
+               'Sessões vendidas (informadas)': float(sold['sessoes'].sum()) if sold['sessoes'].notna().any() else None}
+        row.update(service_stats(sold, 'Vendas'))
+        row.update(service_stats(referred, 'Indicações'))
+        rows.append(row)
     comp = pd.DataFrame(rows)
     if comp.empty:
         st.info('Selecione ao menos um profissional.')
     else:
-        st.dataframe(comp.sort_values('Valor vendido (R$)', ascending=False), use_container_width=True, hide_index=True,
-                     column_config={'Valor vendido (R$)': st.column_config.NumberColumn(format='R$ %.2f'),
-                                    'Ticket médio (R$)': st.column_config.NumberColumn(format='R$ %.2f'),
-                                    'Valor das indicações (R$)': st.column_config.NumberColumn(format='R$ %.2f'),
-                                    'Reabilitações >10 (%)': st.column_config.NumberColumn(format='%.1f%%')})
-        ranking = st.selectbox('Ranking por indicador', ['Valor vendido (R$)', 'Vendas', 'Ticket médio (R$)', 'Indicações (vendas)', 'Valor das indicações (R$)', 'Reabilitações >10 (%)', 'Sessões vendidas (informadas)'])
+        money_cols = [c for c in comp.columns if '(R$)' in c]
+        cfg = {c: st.column_config.NumberColumn(format='R$ %.2f') for c in money_cols}
+        cfg['Reabilitações >10 (%)'] = st.column_config.NumberColumn(format='%.1f%%')
+        st.dataframe(comp.sort_values('Faturamento vendido (R$)', ascending=False), use_container_width=True,
+                     hide_index=True, column_config=cfg)
+        ranking_options = [c for c in comp.columns if c not in ('Fisioterapeuta',) and c != 'Sessões vendidas (informadas)']
+        ranking_options += ['Sessões vendidas (informadas)']
+        ranking = st.selectbox('Ranking por indicador', ranking_options)
         ranked = comp.sort_values(ranking, ascending=False, na_position='last')
-        st.plotly_chart(px.bar(ranked, x='Fisioterapeuta', y=ranking, text_auto='.2s'), use_container_width=True)
-    st.info('Atendimentos realizados e taxas por 100 atendimentos ainda não estão disponíveis: exigem integração da aba Base | Atendimentos. Taxa de conversão exige oportunidades/leads atribuídos a cada profissional.')
+        st.plotly_chart(px.bar(ranked, x='Fisioterapeuta', y=ranking, text_auto='.2s',
+                               title=f'Ranking — {ranking}'), use_container_width=True)
+        comparison = comp.melt(id_vars='Fisioterapeuta',
+                               value_vars=['Faturamento vendido (R$)', 'Faturamento indicado (R$)'],
+                               var_name='Dimensão', value_name='Faturamento (R$)')
+        st.plotly_chart(px.bar(comparison, x='Fisioterapeuta', y='Faturamento (R$)', color='Dimensão',
+                               barmode='group', title='Vendas fechadas x indicações geradas'),
+                        use_container_width=True)
+    st.info('Atendimentos realizados e taxas por 100 atendimentos dependem da aba Base | Atendimentos. Conversão depende do registro dos leads atribuídos.')
 
 with individual:
-    st.subheader('Evolução individual')
+    st.subheader('Desempenho individual: vendas fechadas e indicações geradas')
     people = sorted(set(df['fisio'].map(team_name)) | set(df['indicador'].map(team_name)))
     initial = next((name for name in TEAM if name in people), people[0])
     selected = st.selectbox('Profissional', people, index=people.index(initial))
-    mode = st.radio('Analisar', ['Vendas realizadas', 'Indicações geradas'], horizontal=True)
-    # Respeita os filtros de serviço e origem, mas considera todos os meses para mostrar a série histórica.
+    sold = base[base['fisio_key'] == norm(selected)]
+    referred = base[base['indicador_key'] == norm(selected)]
+    st.caption('Indicadores abaixo respeitam os meses, serviços e origens selecionados na lateral.')
+    ms, mi = metrics(sold), metrics(referred)
+    left, right = st.columns(2)
+    for column, label, stats in [(left, 'VENDAS FECHADAS', ms), (right, 'INDICAÇÕES GERADAS', mi)]:
+        with column:
+            st.markdown(f'#### {label}')
+            st.metric('Faturamento (R$)', brl(stats['valor']))
+            a, b = st.columns(2)
+            a.metric('Quantidade de vendas', stats['vendas'])
+            b.metric('Ticket médio', brl(stats['ticket']) if stats['vendas'] else '—')
+    summary = []
+    for label, frame in [('Vendas fechadas', sold), ('Indicações geradas', referred)]:
+        for category in ['Reabilitação', 'Recovery']:
+            part = frame[frame['categoria'] == category]
+            summary.append({'Dimensão': label, 'Serviço': category, 'Vendas (nº)': len(part),
+                            'Faturamento (R$)': float(part['valor'].sum()),
+                            'Ticket médio (R$)': float(part['valor'].mean()) if len(part) else None})
+    st.subheader('Quantidade, faturamento e ticket por serviço')
+    services_summary = pd.DataFrame(summary)
+    st.dataframe(services_summary, use_container_width=True, hide_index=True,
+                 column_config={'Faturamento (R$)': st.column_config.NumberColumn(format='R$ %.2f'),
+                                'Ticket médio (R$)': st.column_config.NumberColumn(format='R$ %.2f')})
+    c1, c2 = st.columns(2)
+    with c1:
+        st.plotly_chart(px.bar(services_summary, x='Serviço', y='Vendas (nº)', color='Dimensão',
+                               barmode='group', title='Quantidade de vendas por serviço', text_auto=True),
+                        use_container_width=True)
+    with c2:
+        st.plotly_chart(px.bar(services_summary, x='Serviço', y='Faturamento (R$)', color='Dimensão',
+                               barmode='group', title='Faturamento por serviço'), use_container_width=True)
+    st.subheader('Evolução mensal — vendas x indicações')
+    st.caption('Histórico completo com os filtros de serviço e origem; o filtro de meses da lateral não limita este gráfico.')
     historical = df[df['categoria'].isin(selected_services) & df['origem'].isin(selected_origins)].copy()
-    field = 'fisio' if mode == 'Vendas realizadas' else 'indicador'
-    person = historical[historical[field].map(norm) == norm(selected)]
-    if person.empty:
-        st.info('Não há registros históricos desse profissional nos filtros de serviço e origem.')
+    sold_h = historical[historical['fisio_key'] == norm(selected)]
+    referred_h = historical[historical['indicador_key'] == norm(selected)]
+    if sold_h.empty and referred_h.empty:
+        st.info('Sem histórico para este profissional nos filtros escolhidos.')
     else:
-        history = person.groupby('mes', as_index=False).agg(valor=('valor', 'sum'), vendas=('valor', 'size'))
-        history['ticket'] = history['valor'] / history['vendas']
-        start = '2025-07'
-        post_ts = history[history['mes'] >= start]
-        avg = post_ts['valor'].mean() if not post_ts.empty else None
-        a, b, c = st.columns(3)
-        a.metric('Total histórico', brl(float(person['valor'].sum())))
-        b.metric('Vendas associadas', str(len(person)))
-        c.metric('Média mensal pós-TS*', brl(float(avg)) if avg is not None else '—')
-        st.plotly_chart(px.line(history, x='mes', y='valor', markers=True, labels={'mes':'Mês', 'valor':'Valor (R$)'}), use_container_width=True)
-        st.dataframe(history.rename(columns={'mes':'Mês', 'valor':'Valor (R$)', 'vendas':'Vendas', 'ticket':'Ticket médio (R$)'}), hide_index=True, use_container_width=True)
-        st.caption('* Média calculada sobre meses com registros para este profissional, desde julho/2025. Meses sem vendas não entram no denominador; não é uma média de meses-calendário.')
+        first = min([frame['data'].min() for frame in (sold_h, referred_h) if not frame.empty])
+        last = historical['data'].max()
+        month_range = pd.period_range(first.to_period('M'), last.to_period('M'), freq='M').astype(str).tolist()
+        history = pd.concat([month_series(sold_h, month_range, 'Vendas fechadas'),
+                             month_series(referred_h, month_range, 'Indicações geradas')], ignore_index=True)
+        st.plotly_chart(px.line(history, x='mes', y='faturamento', color='Dimensão', markers=True,
+                                labels={'mes': 'Mês', 'faturamento': 'Faturamento (R$)'}),
+                        use_container_width=True)
+        st.plotly_chart(px.bar(history, x='mes', y='quantidade', color='Dimensão', barmode='group',
+                               title='Quantidade mensal de vendas e indicações',
+                               labels={'mes': 'Mês', 'quantidade': 'Vendas (nº)'}), use_container_width=True)
+        st.dataframe(history.rename(columns={'mes': 'Mês', 'faturamento': 'Faturamento (R$)',
+                                             'quantidade': 'Vendas (nº)'}),
+                     hide_index=True, use_container_width=True)
+        st.caption('Meses sem vendas são exibidos com zero. O último mês pode estar incompleto.')
 
 st.divider()
 st.caption('Resultados profissionais compartilhados. Não são exibidos dados pessoais de pacientes. Proteja o acesso ao aplicativo: a URL pública não equivale a controle de acesso.')
