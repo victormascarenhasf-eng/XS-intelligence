@@ -18,6 +18,22 @@ def norm(value):
     text = str(value if pd.notna(value) else '').strip()
     return ''.join(c for c in unicodedata.normalize('NFD', text.upper()) if unicodedata.category(c) != 'Mn')
 
+# Padronização dos nomes usados na aba VENDAS e no painel.
+# A planilha utiliza frequentemente apenas o sobrenome dos profissionais.
+ALIASES = {
+    'VICTOR': 'Victor',
+    'VICTOR MASCARENHAS': 'Victor',
+    'MARCAL': 'Lucas Marçal',
+    'LUCAS MARCAL': 'Lucas Marçal',
+    'VALENTIM': 'Lucas Valentim',
+    'LUCAS VALENTIM': 'Lucas Valentim',
+    'LETICIA': 'Letícia',
+}
+
+def canonical_name(value):
+    original = str(value if pd.notna(value) else '').strip()
+    return ALIASES.get(norm(original), original)
+
 def brl(value):
     return f'R$ {value:,.2f}'.replace(',', '#').replace('.', ',').replace('#', '.')
 
@@ -55,8 +71,8 @@ def prepare(raw):
     df = df[df['data'].notna() & (df['data'].dt.year >= 2020)].copy()
     df['valor'] = df['Valor'].map(parse_brl)
     df['mes'] = df['data'].dt.strftime('%Y-%m')
-    df['fisio'] = df['Fisioterapeuta'].fillna('').astype(str).str.strip().replace('', 'Não informado')
-    df['indicador'] = df['Indicação'].fillna('').astype(str).str.strip().replace('', 'Não informado')
+    df['fisio'] = df['Fisioterapeuta'].map(canonical_name).replace('', 'Não informado')
+    df['indicador'] = df['Indicação'].map(canonical_name).replace('', 'Não informado')
     df['origem'] = df['REF. INDICAÇÃO'].fillna('').astype(str).str.strip().replace('', 'Não informada')
     df['categoria'] = df['Serviço'].map(norm).map(lambda x: 'Reabilitação' if 'REABILITA' in x else ('Recovery' if 'RECOVERY' in x else 'Outros'))
     df['sessoes'] = pd.to_numeric(df.get('Sessões', pd.Series(index=df.index, dtype=str)).astype(str).str.replace(',', '.', regex=False), errors='coerce')
@@ -72,11 +88,7 @@ def metrics(frame):
             'percentual_longo': 100 * (rehab['sessoes'] > 10).sum() / len(rehab) if len(rehab) else None}
 
 def team_name(value):
-    key = norm(value)
-    for name in TEAM:
-        if key == norm(name):
-            return name
-    return value
+    return canonical_name(value)
 
 st.title('XS Intelligence 2.5')
 st.caption('Gestão comercial e desempenho compartilhado • Fonte: VENDAS • Atualização automática em até 5 minutos')
