@@ -8,7 +8,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-st.set_page_config(page_title='XS Intelligence 2.3', page_icon='📊', layout='wide')
+st.set_page_config(page_title='XS Intelligence 2.4', page_icon='📊', layout='wide')
 SPREADSHEET_ID = '1M-kJTc5QvA1OYXDtBe2ChK8iyLX_P0s7gs2TV-pRdzg'
 TEAM = ['Victor', 'Lucas Valentim', 'Lucas Marçal', 'Letícia']
 
@@ -76,7 +76,7 @@ def team_name(value):
             return name
     return value
 
-st.title('XS Intelligence 2.3')
+st.title('XS Intelligence 2.4')
 st.caption('Gestão comercial e desempenho compartilhado • Fonte: VENDAS • Atualização automática em até 5 minutos')
 raw = None
 if 'google_service_account' in st.secrets:
@@ -142,37 +142,53 @@ def operational_snapshot(all_sales):
 
 
 def daily_comparison(all_sales, today):
-    """Faturamento NÃO acumulado por dia, alinhado pelo dia do mês.
+    """Curvas de faturamento acumulado por dia do mês (sem filtros laterais).
 
-    Referências: mês atual, mês anterior, mesmo mês do ano anterior e
-    média dos meses completos pós-TS. Dias inexistentes não entram na média.
+    Média: curvas acumuladas de meses completos pós-TS; meses sem venda contam
+    como zero, e dias inexistentes no mês de referência não entram na média.
     """
     current = pd.Period(today, freq='M')
     previous = current - 1
     last_year = current - 12
     first_historical = pd.Period('2025-07', freq='M')
-    historic_months = list(pd.period_range(first_historical, previous, freq='M')) if previous >= first_historical else []
+    historic_months = (list(pd.period_range(first_historical, previous, freq='M'))
+                       if previous >= first_historical else [])
     clean = all_sales[all_sales['data'].dt.date <= today].copy()
     clean['periodo'] = clean['data'].dt.to_period('M')
     clean['dia'] = clean['data'].dt.day
     daily = clean.groupby(['periodo', 'dia'])['valor'].sum()
 
-    def value(month, day):
-        if day > month.days_in_month:
-            return None
-        return float(daily.get((month, day), 0.0))
+    def cumulative(month):
+        total = 0.0
+        result = {}
+        for day in range(1, month.days_in_month + 1):
+            total += float(daily.get((month, day), 0.0))
+            result[day] = total
+        return result
 
+    curves = {month: cumulative(month) for month in
+              set(historic_months + [current, previous, last_year])}
     output = []
     for day in range(1, current.days_in_month + 1):
-        hist_values = [value(month, day) for month in historic_months if day <= month.days_in_month]
+        values = [curves[month][day] for month in historic_months
+                  if day <= month.days_in_month]
         output.append({
             'Dia do mês': day,
-            'Mês atual': value(current, day) if day <= today.day else None,
-            'Mês anterior': value(previous, day),
-            'Mesmo mês do ano anterior': value(last_year, day) if last_year >= first_historical else None,
-            'Média histórica pós-TS': sum(hist_values) / len(hist_values) if hist_values else None,
+            'Mês atual': curves[current].get(day) if day <= today.day else None,
+            'Mês anterior': curves[previous].get(day),
+            'Mesmo mês do ano anterior': curves[last_year].get(day)
+            if last_year >= first_historical else None,
+            'Média histórica pós-TS': sum(values) / len(values) if values else None,
         })
-    return pd.DataFrame(output), len(historic_months), previous, last_year
+    totals = {
+        'atual': curves[current].get(min(today.day, current.days_in_month), 0.0),
+        'anterior': curves[previous][previous.days_in_month],
+        'ano': curves[last_year][last_year.days_in_month]
+        if last_year >= first_historical else None,
+        'media': (sum(curves[month][month.days_in_month] for month in historic_months)
+                  / len(historic_months)) if historic_months else None,
+    }
+    return pd.DataFrame(output), len(historic_months), previous, last_year, totals
 
 
 visao, equipe, individual = st.tabs(['📊 Visão geral', '👥 Comparativo da equipe', '📈 Evolução individual'])
@@ -188,29 +204,41 @@ with visao:
     d.metric('Faturamento neste mês', brl(float(month_now['valor'].sum())))
     st.caption(f'Semana: {start_week:%d/%m} a {today:%d/%m/%Y} (segunda a hoje) · Mês: 01/{today:%m} a {today:%d/%m/%Y}. Atualização da fonte: cache de até 5 minutos.')
 
-    st.subheader('Faturamento diário — comparação com referências históricas')
-    comparison, historical_n, previous_period, last_year_period = daily_comparison(df, today)
+    st.subheader('Faturamento acumulado por dia — comparação histórica')
+    comparison, historical_n, previous_period, last_year_period, totals = daily_comparison(df, today)
     if historical_n:
-        long_comparison = comparison.melt(id_vars='Dia do mês', var_name='Referência', value_name='Faturamento diário (R$)')
-        long_comparison = long_comparison.dropna(subset=['Faturamento diário (R$)'])
+        a, b, c, d = st.columns(4)
+        a.metric(f'Acumulado {today:%m/%Y} (até hoje)', brl(totals['atual']))
+        b.metric(f'Total {previous_period.strftime("%m/%Y")}', brl(totals['anterior']))
+        c.metric(f'Total {last_year_period.strftime("%m/%Y")}',
+                 brl(totals['ano']) if totals['ano'] is not None else '—')
+        d.metric('Média mensal histórica pós-TS',
+                 brl(totals['media']) if totals['media'] is not None else '—')
+
+        long_comparison = comparison.melt(
+            id_vars='Dia do mês', var_name='Referência',
+            value_name='Faturamento acumulado (R$)'
+        ).dropna(subset=['Faturamento acumulado (R$)'])
         fig = px.line(
-            long_comparison, x='Dia do mês', y='Faturamento diário (R$)',
+            long_comparison, x='Dia do mês', y='Faturamento acumulado (R$)',
             color='Referência', markers=True,
-            category_orders={'Referência': ['Mês atual', 'Mês anterior', 'Mesmo mês do ano anterior', 'Média histórica pós-TS']},
-            title='Vendas fechadas em cada dia (não acumuladas)',
+            category_orders={'Referência': [
+                'Mês atual', 'Mês anterior', 'Mesmo mês do ano anterior',
+                'Média histórica pós-TS']},
+            title='Faturamento acumulado desde o dia 1º de cada mês',
         )
         fig.update_xaxes(dtick=1, range=[0.5, comparison['Dia do mês'].max() + 0.5])
-        fig.update_traces(hovertemplate='Dia %{x}<br>Faturamento: R$ %{y:,.2f}<extra>%{fullData.name}</extra>')
+        fig.update_traces(hovertemplate='Dia %{x}<br>Acumulado: R$ %{y:,.2f}<extra>%{fullData.name}</extra>')
         fig.update_layout(hovermode='x unified', legend_title_text='Período')
         st.plotly_chart(fig, use_container_width=True)
         st.caption(
             f'Mês atual: {today:%m/%Y} (até {today:%d/%m}); '
-            f'mês anterior: {previous_period.strftime("%m/%Y")}; '
-            f'mesmo mês do ano passado: {last_year_period.strftime("%m/%Y")}. '
-            f'Média histórica: {historical_n} meses completos desde julho/2025, incluindo meses sem vendas. '
-            'Os valores são diários, não acumulados. A comparação é global e não depende dos filtros laterais.'
+            f'mês anterior: {previous_period.strftime("%m/%Y")} (completo); '
+            f'mesmo mês do ano passado: {last_year_period.strftime("%m/%Y")} (completo). '
+            f'Média histórica: {historical_n} meses completos desde julho/2025, '
+            'incluindo meses sem vendas. Gráfico independente dos filtros laterais.'
         )
-        st.caption('Dias sem vendas registradas são exibidos como R$ 0; dias que não existem em determinado mês não são comparados. Dias futuros do mês atual ficam sem valor.')
+        st.caption('Cada ponto soma as vendas desde o dia 1º. Dias sem vendas mantêm o acumulado anterior. Dias inexistentes em meses curtos não são comparados; dias futuros do mês atual não aparecem.')
     else:
         st.info('Ainda não há meses completos suficientes para calcular a média histórica pós-TS.')
 
