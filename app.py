@@ -8,7 +8,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-st.set_page_config(page_title='XS Intelligence 2.5', page_icon='📊', layout='wide')
+st.set_page_config(page_title='XS Intelligence 2.7', page_icon='📊', layout='wide')
 SPREADSHEET_ID = '1M-kJTc5QvA1OYXDtBe2ChK8iyLX_P0s7gs2TV-pRdzg'
 TEAM = ['Victor', 'Lucas Valentim', 'Lucas Marçal', 'Letícia']
 GOALS = {'Lucas Marçal': 20750.0, 'Victor': 19400.0, 'Lucas Valentim': 12750.0, 'Letícia': 2100.0}
@@ -90,7 +90,7 @@ def metrics(frame):
 def team_name(value):
     return canonical_name(value)
 
-st.title('XS Intelligence 2.5')
+st.title('XS Intelligence 2.7')
 st.caption('Gestão comercial e desempenho compartilhado • Fonte: VENDAS • Atualização automática em até 5 minutos')
 raw = None
 if 'google_service_account' in st.secrets:
@@ -290,6 +290,126 @@ def individual_cumulative(all_sales, today, name, kind, target=None):
                f'{len(history_months)} meses completos anteriores (incluindo meses sem vendas). '
                'Dias inexistentes não entram na média. ' +
                ('Linha de meta proporcional aos dias do mês.' if target is not None else ''))
+
+
+
+# ---- Produção: dados de agenda exportados diariamente ----
+PRODUCTION_GOALS = {'Lucas Marçal': 120, 'Lucas Valentim': 100, 'Victor': 90, 'Letícia': 40}
+FULL_NAMES = {
+    'LUCAS MARCAL ROCHA DA SILVA': 'Lucas Marçal',
+    'LUCAS VALENTIM DE FREITAS': 'Lucas Valentim',
+    'VICTOR MATHEUS LEITE MASCARENHAS FERREIRA': 'Victor',
+    'LETICIA CARVALHO BEZERRA DE MENDONCA': 'Letícia',
+}
+
+@st.cache_data(ttl=300, show_spinner='Atualizando base de atendimentos...')
+def get_appointments(sheet_id, credentials):
+    import gspread
+    client = gspread.service_account_from_dict(credentials)
+    return client.open_by_key(sheet_id).worksheet('Base | Atendimentos').get_all_values()
+
+def classify_appointment(service):
+    label = norm(service)
+    if 'VOUCHER' in label or 'AVALIACAO' in label or 'CRIOTERAPIA' in label:
+        return 'Não remunerado'
+    if 'FISIOTERAPIA' in label or 'RECOVERY' in label or 'FISIO LONGEVIDADE' in label:
+        return 'Remunerado'
+    return 'Não classificado'
+
+def prepare_appointments(values):
+    # A planilha histórica não tem cabeçalho fixo: a situação aparece em M ou N.
+    rows = []
+    for r in values:
+        if len(r) < 10:
+            continue
+        name = FULL_NAMES.get(norm(r[8]))
+        if not name:
+            continue
+        statuses = [r[i].strip() for i in (12, 13) if len(r) > i and r[i]]
+        if 'Confirmado' not in statuses:
+            continue
+        dt = pd.to_datetime(str(r[0]).strip(), format='%d/%m/%Y', errors='coerce')
+        if pd.isna(dt):
+            continue
+        rows.append((dt, name, str(r[9]), classify_appointment(r[9])))
+    return pd.DataFrame(rows, columns=['data','fisio','servico','classe'])
+
+def sold_sessions(sales, begin, end, name=None):
+    x = sales[(sales['data'].dt.date >= begin) & (sales['data'].dt.date <= end)]
+    if name:
+        x = x[x['fisio'] == name]
+    # Sessões desconhecidas NÃO são presumidas como 1; registrar separadamente.
+    valid = x['sessoes'].notna() & (x['sessoes'] > 0)
+    return int(x.loc[valid, 'sessoes'].sum()), int((~valid).sum())
+
+def production_count(appointments, begin, end, name=None, classe='Remunerado'):
+    if appointments.empty:
+        return 0
+    x = appointments[(appointments['data'].dt.date >= begin) & (appointments['data'].dt.date <= end)]
+    if name:
+        x = x[x['fisio'] == name]
+    if classe:
+        x = x[x['classe'] == classe]
+    return len(x)
+
+def ira_text(sold, attended):
+    return f'{100 * sold / attended:.1f}%' if attended else '—'
+
+def productivity_cumulative(appointments, name, today):
+    st.markdown('#### Evolução de atendimentos remunerados — diário e acumulado')
+    current = pd.Period(today, freq='M')
+    previous = current - 1
+    historic = [current - k for k in range(1, 7)]
+    cutoff = today.day
+    days = list(range(1, cutoff + 1))
+    def day_counts(period):
+        x = appointments[(appointments['fisio'] == name) &
+                         (appointments['classe'] == 'Remunerado') &
+                         (appointments['data'].dt.to_period('M') == period)]
+        counts = x.groupby(x['data'].dt.day).size()
+        return [float(counts.get(day, 0)) if day <= period.days_in_month else float('nan') for day in days]
+    actual = day_counts(current)
+    prior = day_counts(previous)
+    history = [day_counts(p) for p in historic]
+    historical_mean = []
+    for i in range(len(days)):
+        vals = [arr[i] for arr in history if not pd.isna(arr[i])]
+        historical_mean.append(sum(vals) / len(vals) if vals else float('nan'))
+    frame = pd.DataFrame({'Dia': days, 'Mês atual': actual,
+                          'Mês anterior': prior, 'Média histórica (6 meses)': historical_mean})
+    cumulative = frame.copy()
+    for col in frame.columns[1:]:
+        cumulative[col] = frame[col].fillna(0).cumsum()
+        cumulative.loc[frame[col].isna(), col] = float('nan')
+    x1, x2 = st.columns(2)
+    with x1:
+        st.plotly_chart(px.line(frame.melt(id_vars='Dia', var_name='Referência', value_name='Atendimentos'),
+                                x='Dia', y='Atendimentos', color='Referência', markers=True,
+                                title='Atendimentos por dia'), use_container_width=True)
+    with x2:
+        st.plotly_chart(px.line(cumulative.melt(id_vars='Dia', var_name='Referência', value_name='Acumulado'),
+                                x='Dia', y='Acumulado', color='Referência', markers=True,
+                                title='Atendimentos acumulados'), use_container_width=True)
+    now_n = int(sum(actual))
+    prev_n = sum(v for v in prior if not pd.isna(v))
+    hist_n = sum(v for v in historical_mean if not pd.isna(v))
+    a,b,c,d = st.columns(4)
+    a.metric('Atendidos até hoje', now_n)
+    b.metric('Mesmo período do mês anterior', int(prev_n), delta=f'{now_n-prev_n:+.0f}')
+    c.metric('Média histórica até o mesmo dia', f'{hist_n:.1f}', delta=f'{now_n-hist_n:+.1f}')
+    d.metric('Meta mensal', PRODUCTION_GOALS[name])
+    st.caption('Média histórica: seis meses anteriores, dia a dia; datas inexistentes em meses curtos são ignoradas. '
+               'Compare também dias úteis e feriados antes de interpretar diferenças.')
+
+appointments = pd.DataFrame(columns=['data','fisio','servico','classe'])
+appointments_error = None
+if 'google_service_account' in st.secrets:
+    try:
+        appointment_values = get_appointments(st.secrets.get('spreadsheet_id', SPREADSHEET_ID),
+                                               dict(st.secrets['google_service_account']))
+        appointments = prepare_appointments(appointment_values)
+    except Exception as exc:
+        appointments_error = type(exc).__name__
 
 
 visao, equipe, individual = st.tabs(['📊 Visão geral', '👥 Comparativo da equipe', '📈 Evolução individual'])
@@ -523,3 +643,88 @@ with individual:
 
 st.divider()
 st.caption('Resultados profissionais compartilhados. Não são exibidos dados pessoais de pacientes. Proteja o acesso ao aplicativo: a URL pública não equivale a controle de acesso.')
+
+
+# ---- Blocos adicionais (mesmas três abas; preservam gráficos e filtros existentes) ----
+now_prod = datetime.now(ZoneInfo('America/Fortaleza')).date()
+month_begin = now_prod.replace(day=1)
+week_begin = now_prod - timedelta(days=now_prod.weekday())
+with visao:
+    st.divider()
+    st.subheader('🏥 Produtividade da fisioterapia — mês corrente')
+    if appointments_error:
+        st.warning(f'Não foi possível atualizar os atendimentos ({appointments_error}). Confira o acesso à aba Base | Atendimentos.')
+    elif appointments.empty:
+        st.info('Nenhum atendimento confirmado encontrado na base.')
+    else:
+        latest = appointments['data'].max().date()
+        st.caption(f'Última data confirmada encontrada: {latest:%d/%m/%Y}. '
+                   'Indicadores independentes dos filtros laterais. Somente agendamentos Confirmados.')
+        end = min(now_prod, latest)
+        team_paid = production_count(appointments, month_begin, end)
+        team_free = production_count(appointments, month_begin, end, classe='Não remunerado')
+        sold, missing = sold_sessions(df, month_begin, now_prod)
+        a,b,c,d = st.columns(4)
+        a.metric('Atendimentos remunerados', team_paid)
+        b.metric('Atendimentos não remunerados', team_free)
+        c.metric('Sessões vendidas no mês', sold)
+        d.metric('IRA mensal da equipe', ira_text(sold, team_paid))
+        st.progress(min(team_paid / sum(PRODUCTION_GOALS.values()), 1.0),
+                    text=f'{team_paid} de {sum(PRODUCTION_GOALS.values())} atendimentos remunerados da meta da equipe')
+        st.caption(f'Vendas com quantidade de sessões ausente ou inválida: {missing}. '
+                   'IRA é indicador de fluxo comercial/produtivo, não saldo exato de sessões em carteira.')
+        lines = []
+        for name, goal in PRODUCTION_GOALS.items():
+            paid = production_count(appointments, month_begin, end, name)
+            free = production_count(appointments, month_begin, end, name, 'Não remunerado')
+            sessions, unknown = sold_sessions(df, month_begin, now_prod, name)
+            lines.append({'Fisioterapeuta':name,'Remunerados':paid,'Não remunerados':free,
+                          'Meta':goal,'Atingimento (%)':round(100*paid/goal,1),
+                          'Sessões vendidas':sessions,'IRA (%)':round(100*sessions/paid,1) if paid else None,
+                          'Vendas sem sessões':unknown})
+        st.dataframe(pd.DataFrame(lines), use_container_width=True, hide_index=True)
+        if not appointments[appointments['classe']=='Não classificado'].empty:
+            st.warning('Há serviços confirmados ainda não classificados. Revise antes de interpretar a produção total.')
+
+with equipe:
+    st.divider()
+    st.subheader('⚖️ Reposição semanal e mensal da agenda')
+    if not appointments.empty:
+        records = []
+        end = min(now_prod, appointments['data'].max().date())
+        for name in PRODUCTION_GOALS:
+            for label, begin in [('Semana atual',week_begin),('Mês atual',month_begin)]:
+                paid = production_count(appointments, begin, end, name)
+                sold, missing = sold_sessions(df, begin, now_prod, name)
+                records.append({'Profissional':name,'Período':label,'Sessões vendidas':sold,
+                                'Atendimentos remunerados':paid,'Saldo do período':sold-paid,
+                                'IRA (%)':round(100*sold/paid,1) if paid else None,
+                                'Vendas sem nº sessões':missing})
+        st.dataframe(pd.DataFrame(records), use_container_width=True, hide_index=True)
+        st.caption('Atribuição: vendas por profissional que fechou; atendimentos por profissional que executou. '
+                   'Um IRA abaixo de 100% isoladamente não demonstra perda futura de agenda.')
+    else:
+        st.info('Aguardando conexão com a Base | Atendimentos.')
+
+with individual:
+    st.divider()
+    st.subheader('🏥 Produtividade individual e reposição da agenda')
+    if selected in PRODUCTION_GOALS and not appointments.empty:
+        end = min(now_prod, appointments['data'].max().date())
+        for label, begin in [('Semana atual', week_begin), ('Mês atual', month_begin)]:
+            sold, missing = sold_sessions(df, begin, now_prod, selected)
+            paid = production_count(appointments, begin, end, selected)
+            free = production_count(appointments, begin, end, selected, 'Não remunerado')
+            st.markdown(f'**{label}**')
+            a,b,c,d = st.columns(4)
+            a.metric('Sessões vendidas', sold)
+            b.metric('Atendimentos remunerados', paid)
+            c.metric('Não remunerados', free)
+            d.metric('IRA', ira_text(sold, paid))
+            if missing:
+                st.caption(f'{missing} venda(s) sem número válido de sessões no período.')
+        productivity_cumulative(appointments, selected, now_prod)
+    elif selected not in PRODUCTION_GOALS:
+        st.info('Acompanhamento de produção disponível para os quatro fisioterapeutas principais.')
+    else:
+        st.info('Aguardando dados de atendimentos para mostrar a evolução individual.')
