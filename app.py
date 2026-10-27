@@ -1,11 +1,14 @@
 import io
 import re
 import unicodedata
+import calendar
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-st.set_page_config(page_title='XS Intelligence 2.0', page_icon='📊', layout='wide')
+st.set_page_config(page_title='XS Intelligence 2.3', page_icon='📊', layout='wide')
 SPREADSHEET_ID = '1M-kJTc5QvA1OYXDtBe2ChK8iyLX_P0s7gs2TV-pRdzg'
 TEAM = ['Victor', 'Lucas Valentim', 'Lucas Marçal', 'Letícia']
 
@@ -73,7 +76,7 @@ def team_name(value):
             return name
     return value
 
-st.title('XS Intelligence 2.0')
+st.title('XS Intelligence 2.3')
 st.caption('Gestão comercial e desempenho compartilhado • Fonte: VENDAS • Atualização automática em até 5 minutos')
 raw = None
 if 'google_service_account' in st.secrets:
@@ -127,9 +130,92 @@ if base.empty:
 if invalid:
     st.warning(f'Qualidade dos dados: {invalid} venda(s) fechada(s) excluída(s) por data inválida.')
 
+def operational_snapshot(all_sales):
+    """KPIs sempre globais, sem filtros, usando a data local de Fortaleza."""
+    today = datetime.now(ZoneInfo('America/Fortaleza')).date()
+    dated = all_sales[all_sales['data'].dt.date <= today]
+    start_week = today - timedelta(days=today.weekday())  # segunda-feira
+    month_start = today.replace(day=1)
+    week = dated[dated['data'].dt.date >= start_week]
+    month = dated[dated['data'].dt.date >= month_start]
+    return today, start_week, week, month
+
+
+def daily_comparison(all_sales, today):
+    """Faturamento NÃO acumulado por dia, alinhado pelo dia do mês.
+
+    Referências: mês atual, mês anterior, mesmo mês do ano anterior e
+    média dos meses completos pós-TS. Dias inexistentes não entram na média.
+    """
+    current = pd.Period(today, freq='M')
+    previous = current - 1
+    last_year = current - 12
+    first_historical = pd.Period('2025-07', freq='M')
+    historic_months = list(pd.period_range(first_historical, previous, freq='M')) if previous >= first_historical else []
+    clean = all_sales[all_sales['data'].dt.date <= today].copy()
+    clean['periodo'] = clean['data'].dt.to_period('M')
+    clean['dia'] = clean['data'].dt.day
+    daily = clean.groupby(['periodo', 'dia'])['valor'].sum()
+
+    def value(month, day):
+        if day > month.days_in_month:
+            return None
+        return float(daily.get((month, day), 0.0))
+
+    output = []
+    for day in range(1, current.days_in_month + 1):
+        hist_values = [value(month, day) for month in historic_months if day <= month.days_in_month]
+        output.append({
+            'Dia do mês': day,
+            'Mês atual': value(current, day) if day <= today.day else None,
+            'Mês anterior': value(previous, day),
+            'Mesmo mês do ano anterior': value(last_year, day) if last_year >= first_historical else None,
+            'Média histórica pós-TS': sum(hist_values) / len(hist_values) if hist_values else None,
+        })
+    return pd.DataFrame(output), len(historic_months), previous, last_year
+
+
 visao, equipe, individual = st.tabs(['📊 Visão geral', '👥 Comparativo da equipe', '📈 Evolução individual'])
 
 with visao:
+    today, start_week, week_now, month_now = operational_snapshot(df)
+    st.subheader('Pulso comercial — semana e mês corrente')
+    st.caption('Indicadores globais, independentes dos filtros laterais. Consideram apenas vendas FECHADAS com data até hoje (horário de Fortaleza).')
+    a, b, c, d = st.columns(4)
+    a.metric('Vendas nesta semana (nº)', len(week_now))
+    b.metric('Faturamento nesta semana', brl(float(week_now['valor'].sum())))
+    c.metric('Vendas neste mês (nº)', len(month_now))
+    d.metric('Faturamento neste mês', brl(float(month_now['valor'].sum())))
+    st.caption(f'Semana: {start_week:%d/%m} a {today:%d/%m/%Y} (segunda a hoje) · Mês: 01/{today:%m} a {today:%d/%m/%Y}. Atualização da fonte: cache de até 5 minutos.')
+
+    st.subheader('Faturamento diário — comparação com referências históricas')
+    comparison, historical_n, previous_period, last_year_period = daily_comparison(df, today)
+    if historical_n:
+        long_comparison = comparison.melt(id_vars='Dia do mês', var_name='Referência', value_name='Faturamento diário (R$)')
+        long_comparison = long_comparison.dropna(subset=['Faturamento diário (R$)'])
+        fig = px.line(
+            long_comparison, x='Dia do mês', y='Faturamento diário (R$)',
+            color='Referência', markers=True,
+            category_orders={'Referência': ['Mês atual', 'Mês anterior', 'Mesmo mês do ano anterior', 'Média histórica pós-TS']},
+            title='Vendas fechadas em cada dia (não acumuladas)',
+        )
+        fig.update_xaxes(dtick=1, range=[0.5, comparison['Dia do mês'].max() + 0.5])
+        fig.update_traces(hovertemplate='Dia %{x}<br>Faturamento: R$ %{y:,.2f}<extra>%{fullData.name}</extra>')
+        fig.update_layout(hovermode='x unified', legend_title_text='Período')
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption(
+            f'Mês atual: {today:%m/%Y} (até {today:%d/%m}); '
+            f'mês anterior: {previous_period.strftime("%m/%Y")}; '
+            f'mesmo mês do ano passado: {last_year_period.strftime("%m/%Y")}. '
+            f'Média histórica: {historical_n} meses completos desde julho/2025, incluindo meses sem vendas. '
+            'Os valores são diários, não acumulados. A comparação é global e não depende dos filtros laterais.'
+        )
+        st.caption('Dias sem vendas registradas são exibidos como R$ 0; dias que não existem em determinado mês não são comparados. Dias futuros do mês atual ficam sem valor.')
+    else:
+        st.info('Ainda não há meses completos suficientes para calcular a média histórica pós-TS.')
+
+    st.divider()
+    st.subheader('Análise do período selecionado')
     m = metrics(base)
     cols = st.columns(4)
     cols[0].metric('Valor vendido', brl(m['valor']))
