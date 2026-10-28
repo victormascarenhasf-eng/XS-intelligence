@@ -8,11 +8,95 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-st.set_page_config(page_title='XS Intelligence 2.7', page_icon='📊', layout='wide')
+st.set_page_config(page_title='XS Intelligence 3.0', page_icon='📊', layout='wide')
 SPREADSHEET_ID = '1M-kJTc5QvA1OYXDtBe2ChK8iyLX_P0s7gs2TV-pRdzg'
 TEAM = ['Victor', 'Lucas Valentim', 'Lucas Marçal', 'Letícia']
 GOALS = {'Lucas Marçal': 20750.0, 'Victor': 19400.0, 'Lucas Valentim': 12750.0, 'Letícia': 2100.0}
 CLINIC_GOAL = 55000.0
+
+# XS Intelligence 3.0 — identidade visual institucional, com contraste moderado.
+import plotly.graph_objects as go
+import calendar as _calendar
+XS_LIME = '#B7DE28'
+XS_LIME_SOFT = '#D1EA74'
+XS_FOREST = '#315D45'
+XS_MUTED = '#879C96'
+XS_GRAY = '#AAB5B4'
+XS_PALETTE = [XS_LIME, '#668E73', '#B8C9BF', '#7297A6', '#E1D49D', '#93A3A0']
+px.defaults.template = 'plotly_dark'
+px.defaults.color_discrete_sequence = XS_PALETTE
+
+st.markdown("""
+<style>
+:root { --xs-lime:#B7DE28; --xs-forest:#315D45; }
+[data-testid="stAppViewContainer"] {background:linear-gradient(150deg,#0C1314 0%,#101B1B 70%,#101816 100%);}
+[data-testid="stSidebar"] {background:linear-gradient(180deg,#0A1212,#15211A);border-right:1px solid #283D32;}
+[data-testid="stHeader"] {background:transparent;}
+.block-container {padding-top:1.35rem;padding-bottom:3rem;max-width:1450px;}
+h1,h2,h3 {letter-spacing:-.025em;color:#F2F6F1 !important;}
+h3 {font-size:1.22rem !important;}
+[data-testid="stMetric"] {background:#152021;border:1px solid #293735;border-radius:15px;padding:16px 18px;min-height:112px;}
+[data-testid="stMetricLabel"] {color:#B9C7C0;}
+[data-testid="stMetricValue"] {color:#F4F8F4;font-weight:700;letter-spacing:-.03em;}
+[data-testid="stMetricDelta"] {color:var(--xs-lime);}
+[data-testid="stProgress"] > div > div > div {background-color:var(--xs-lime) !important;}
+[data-testid="stTabs"] button[aria-selected="true"] {color:var(--xs-lime) !important;border-bottom-color:var(--xs-lime) !important;}
+[data-testid="stDataFrame"] {border:1px solid #283735;border-radius:12px;overflow:hidden;}
+[data-testid="stCaptionContainer"] {color:#9EAEA6;}
+hr {border-color:#2C3B37 !important;}
+.xs-brand {border:1px solid #334733;border-radius:16px;background:linear-gradient(100deg,#16221D,#101A1B);padding:17px 21px;margin-bottom:18px;display:flex;align-items:center;gap:16px;}
+.xs-mark {font-size:35px;line-height:1;font-weight:1000;font-style:italic;color:#B7DE28;letter-spacing:-5px;}
+.xs-brand-name {font-weight:800;font-size:19px;letter-spacing:2px;color:#F6F8F3;}
+.xs-brand-sub {font-size:10px;letter-spacing:4px;color:#B7DE28;}
+.xs-subtitle {font-size:12px;color:#9DB0A6;margin-top:4px;letter-spacing:.03em;}
+</style>
+<div class="xs-brand"><div class="xs-mark">XS</div><div><div class="xs-brand-name">XS TEAM</div><div class="xs-brand-sub">WELLNESS CLUB · INTELLIGENCE 3.0</div><div class="xs-subtitle">Indicadores comerciais, produtividade e metas</div></div></div>
+""", unsafe_allow_html=True)
+
+# Padroniza todos os gráficos existentes sem alterar os cálculos ou filtros.
+_original_plotly_chart = st.plotly_chart
+def xs_plotly_chart(fig, *args, **kwargs):
+    try:
+        fig.update_layout(
+            template='plotly_dark', paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)', font=dict(family='Arial',color='#DFE9E2',size=12),
+            title_font=dict(size=16,color='#F3F7F1'),
+            legend=dict(orientation='h',yanchor='bottom',y=1.02,xanchor='left',x=0,font=dict(size=11)),
+            margin=dict(l=22,r=18,t=68,b=34),
+            hoverlabel=dict(bgcolor='#20312B',font_size=12,font_color='#FFFFFF'),
+        )
+        fig.update_xaxes(showgrid=False,zeroline=False,linecolor='#3A4A43',tickfont=dict(color='#C2D0C8'))
+        fig.update_yaxes(showgrid=True,gridcolor='rgba(157,181,168,.13)',zeroline=False,tickfont=dict(color='#C2D0C8'))
+        for trace in fig.data:
+            if trace.type == 'bar':
+                trace.update(marker_line_width=0,opacity=.92)
+            elif trace.type == 'scatter' and getattr(trace,'mode',None) and 'lines' in trace.mode:
+                trace.update(line=dict(width=3))
+            elif trace.type == 'pie':
+                trace.update(marker=dict(line=dict(color='#101A1B',width=2)),textinfo='percent')
+    except Exception:
+        pass
+    return _original_plotly_chart(fig,*args,**kwargs)
+st.plotly_chart = xs_plotly_chart
+
+def weekly_goal_panel(all_sales, today, week_start, week_sales):
+    """Meta semanal proporcional aos dias do mês, sem alterar a meta mensal fixa."""
+    week_end = week_start + timedelta(days=6)
+    days_in_month = _calendar.monthrange(today.year,today.month)[1]
+    # Distribuição proporcional da meta mensal para cada dia da semana corrente.
+    days_current_month = sum(1 for i in range(7) if (week_start+timedelta(days=i)).month==today.month)
+    # Em semanas que cruzam meses, a meta de cada dia usa o tamanho do seu próprio mês.
+    target = sum(CLINIC_GOAL / _calendar.monthrange((week_start+timedelta(days=i)).year,(week_start+timedelta(days=i)).month)[1] for i in range(7))
+    revenue = float(week_sales['valor'].sum())
+    pct = 100*revenue/target if target else 0
+    st.subheader('Meta de faturamento · semana atual')
+    x,y,z = st.columns(3)
+    x.metric('Faturamento da semana',brl(revenue))
+    y.metric('Meta semanal proporcional',brl(target))
+    z.metric('Atingimento da meta',f'{pct:.1f}%')
+    st.progress(min(max(revenue/target,0),1),text=f'{pct:.1f}% da meta semanal')
+    st.caption(f'Semana de {week_start:%d/%m} a {week_end:%d/%m/%Y}. Meta semanal calculada proporcionalmente à meta mensal de {brl(CLINIC_GOAL)} pelos dias de calendário de cada mês. Faturamento acumulado somente até {today:%d/%m}.')
+
 
 def norm(value):
     text = str(value if pd.notna(value) else '').strip()
@@ -425,6 +509,7 @@ with visao:
     d.metric('Faturamento neste mês', brl(float(month_now['valor'].sum())))
     st.caption(f'Semana: {start_week:%d/%m} a {today:%d/%m/%Y} (segunda a hoje) · Mês: 01/{today:%m} a {today:%d/%m/%Y}. Atualização da fonte: cache de até 5 minutos.')
 
+    weekly_goal_panel(df, today, start_week, week_now)
     goal_panel(df, today)
     st.divider()
 
