@@ -8,7 +8,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-st.set_page_config(page_title='XS Intelligence 3.0', page_icon='📊', layout='wide')
+st.set_page_config(page_title='XS DASHBOARD FISIO', page_icon='📊', layout='wide')
 SPREADSHEET_ID = '1M-kJTc5QvA1OYXDtBe2ChK8iyLX_P0s7gs2TV-pRdzg'
 TEAM = ['Victor', 'Lucas Valentim', 'Lucas Marçal', 'Letícia']
 GOALS = {'Lucas Marçal': 20750.0, 'Victor': 19400.0, 'Lucas Valentim': 12750.0, 'Letícia': 2100.0}
@@ -174,7 +174,7 @@ def metrics(frame):
 def team_name(value):
     return canonical_name(value)
 
-st.title('XS Intelligence 2.7')
+st.title('XS Fisio - Painel de Gestão')
 st.caption('Gestão comercial e desempenho compartilhado • Fonte: VENDAS • Atualização automática em até 5 minutos')
 raw = None
 if 'google_service_account' in st.secrets:
