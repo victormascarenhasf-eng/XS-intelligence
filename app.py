@@ -2,13 +2,13 @@ import io
 import re
 import unicodedata
 import calendar
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-st.set_page_config(page_title='XS DASHBOARD FISIO', page_icon='📊', layout='wide')
+st.set_page_config(page_title='XS Intelligence 3.0', page_icon='📊', layout='wide')
 SPREADSHEET_ID = '1M-kJTc5QvA1OYXDtBe2ChK8iyLX_P0s7gs2TV-pRdzg'
 TEAM = ['Victor', 'Lucas Valentim', 'Lucas Marçal', 'Letícia']
 GOALS = {'Lucas Marçal': 20750.0, 'Victor': 19400.0, 'Lucas Valentim': 12750.0, 'Letícia': 2100.0}
@@ -174,7 +174,7 @@ def metrics(frame):
 def team_name(value):
     return canonical_name(value)
 
-st.title('XS Fisio - Painel de Gestão')
+st.title('XS Intelligence 2.7')
 st.caption('Gestão comercial e desempenho compartilhado • Fonte: VENDAS • Atualização automática em até 5 minutos')
 raw = None
 if 'google_service_account' in st.secrets:
@@ -496,7 +496,7 @@ if 'google_service_account' in st.secrets:
         appointments_error = type(exc).__name__
 
 
-visao, equipe, individual = st.tabs(['📊 Visão geral', '👥 Comparativo da equipe', '📈 Evolução individual'])
+visao, produtividade, individual = st.tabs(['📊 Visão geral', '🎯 Produtividade da Fisioterapia', '📈 Evolução individual'])
 
 with visao:
     today, start_week, week_now, month_now = operational_snapshot(df)
@@ -590,7 +590,7 @@ def month_series(frame, all_months, label):
     return grouped
 
 
-with equipe:
+with produtividade:
     st.subheader('Ranking e comparativo dos fisioterapeutas')
     st.caption('Vendas fechadas = coluna Fisioterapeuta. Indicações geradas = coluna Indicação. Uma venda pode constar nas duas dimensões; não some seus faturamentos.')
     available = sorted(set(base['fisio'].map(team_name)) | set(base['indicador'].map(team_name)))
@@ -734,8 +734,7 @@ st.caption('Resultados profissionais compartilhados. Não são exibidos dados pe
 now_prod = datetime.now(ZoneInfo('America/Fortaleza')).date()
 month_begin = now_prod.replace(day=1)
 week_begin = now_prod - timedelta(days=now_prod.weekday())
-with visao:
-    st.divider()
+with produtividade:
     st.subheader('🏥 Produtividade da fisioterapia — mês corrente')
     if appointments_error:
         st.warning(f'Não foi possível atualizar os atendimentos ({appointments_error}). Confira o acesso à aba Base | Atendimentos.')
@@ -767,11 +766,71 @@ with visao:
                           'Meta':goal,'Atingimento (%)':round(100*paid/goal,1),
                           'Sessões vendidas':sessions,'IRA (%)':round(100*sessions/paid,1) if paid else None,
                           'Vendas sem sessões':unknown})
+        st.markdown('### 🎯 Metas individuais de atendimentos remunerados')
+        st.caption('Metas individuais calculadas somente com atendimentos remunerados confirmados. Nenhum valor de remuneração é exibido.')
+        for start in range(0, len(lines), 2):
+            cols = st.columns(2)
+            for col, record in zip(cols, lines[start:start + 2]):
+                name = record['Fisioterapeuta']
+                paid = record['Remunerados']
+                goal = record['Meta']
+                pct = 100 * paid / goal if goal else 0
+                with col:
+                    with st.container(border=True):
+                        st.markdown(f'**{name}**')
+                        st.metric('Meta atingida', f'{pct:.1f}%',
+                                  help='Percentual da meta mensal de atendimentos remunerados')
+                        st.progress(min(max(pct / 100, 0), 1),
+                                    text=f'{paid} de {goal} atendimentos remunerados')
+                        st.metric('Faltam para a meta', max(goal - paid, 0))
+        st.markdown('### 📈 Ritmo e projeção de fechamento')
+        from calendar import monthrange
+        last_day = monthrange(now_prod.year, now_prod.month)[1]
+        all_workdays = [date(now_prod.year, now_prod.month, day) for day in range(1, last_day + 1)
+                        if date(now_prod.year, now_prod.month, day).weekday() < 5]
+        elapsed_workdays = sum(day <= end for day in all_workdays)
+        remaining_workdays = sum(day > end for day in all_workdays)
+        projection_rows = []
+        for record in lines:
+            paid = record['Remunerados']
+            average = paid / elapsed_workdays if elapsed_workdays else 0
+            projected = round(paid + average * remaining_workdays)
+            projection_rows.append({'Fisioterapeuta': record['Fisioterapeuta'],
+                                    'Média por dia útil': round(average, 1),
+                                    'Projeção mensal': projected,
+                                    'Meta': record['Meta'],
+                                    'Diferença projetada': projected - record['Meta']})
+        st.dataframe(pd.DataFrame(projection_rows), hide_index=True, use_container_width=True)
+        st.caption('Projeção linear pela média por dia útil de segunda a sexta até a última data disponível; '
+                   'não ajustada por feriados, sábados ou alterações de escala. É estimativa, não garantia.')
+
+        st.markdown('### 📅 Evolução diária da equipe')
+        current_paid = appointments[(appointments['classe'] == 'Remunerado') &
+                                    (appointments['data'].dt.date >= month_begin) &
+                                    (appointments['data'].dt.date <= end)]
+        daily = current_paid.groupby(current_paid['data'].dt.date).size()
+        timeline = pd.DataFrame({'Data': pd.date_range(month_begin, end, freq='D')})
+        timeline['Atendimentos'] = timeline['Data'].dt.date.map(daily).fillna(0).astype(int)
+        timeline['Acumulado'] = timeline['Atendimentos'].cumsum()
+        c1, c2 = st.columns(2)
+        with c1:
+            st.plotly_chart(px.bar(timeline, x='Data', y='Atendimentos',
+                                   title='Atendimentos remunerados por dia'), use_container_width=True)
+        with c2:
+            st.plotly_chart(px.line(timeline, x='Data', y='Acumulado', markers=True,
+                                    title='Produção acumulada no mês'), use_container_width=True)
+
+        st.markdown('### 🧾 Distribuição dos atendimentos não remunerados')
+        free_chart = pd.DataFrame([{'Fisioterapeuta': r['Fisioterapeuta'],
+                                    'Não remunerados': r['Não remunerados']} for r in lines])
+        st.plotly_chart(px.bar(free_chart, x='Fisioterapeuta', y='Não remunerados',
+                               title='Atendimentos não remunerados por profissional'), use_container_width=True)
+        st.markdown('#### Detalhamento da produtividade')
         st.dataframe(pd.DataFrame(lines), use_container_width=True, hide_index=True)
         if not appointments[appointments['classe']=='Não classificado'].empty:
             st.warning('Há serviços confirmados ainda não classificados. Revise antes de interpretar a produção total.')
 
-with equipe:
+with produtividade:
     st.divider()
     st.subheader('⚖️ Reposição semanal e mensal da agenda')
     if not appointments.empty:
