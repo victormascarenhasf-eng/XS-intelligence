@@ -174,7 +174,7 @@ def metrics(frame):
 def team_name(value):
     return canonical_name(value)
 
-st.title('XS Intelligence 2.7')
+st.title('XS Fisio - Painel de Gestão')
 st.caption('Gestão comercial e desempenho compartilhado • Fonte: VENDAS • Atualização automática em até 5 minutos')
 raw = None
 if 'google_service_account' in st.secrets:
