@@ -509,6 +509,44 @@ with visao:
     d.metric('Faturamento neste mês', brl(float(month_now['valor'].sum())))
     st.caption(f'Semana: {start_week:%d/%m} a {today:%d/%m/%Y} (segunda a hoje) · Mês: 01/{today:%m} a {today:%d/%m/%Y}. Atualização da fonte: cache de até 5 minutos.')
 
+    # Acompanhamento de períodos móveis: todas as vendas FECHADAS, sem filtros laterais.
+    # Comparações usam janelas equivalentes e não incluem vendas com data futura.
+    st.subheader('Acompanhamento de vendas — períodos')
+    st.caption('Faturamento pela data da venda • períodos móveis em dias corridos • horário de Fortaleza.')
+
+    sales_dates = df['data'].dt.date
+    def period_revenue(start, end):
+        mask = (sales_dates >= start) & (sales_dates <= end)
+        return float(df.loc[mask, 'valor'].sum())
+
+    def variation(current, previous):
+        if previous == 0:
+            return None if current == 0 else 'Sem base anterior'
+        return f'{(current / previous - 1) * 100:+.1f}%'
+
+    yesterday = today - timedelta(days=1)
+    day_before = today - timedelta(days=2)
+    periods = [
+        ('Hoje', today, today, yesterday, yesterday),
+        ('Ontem', yesterday, yesterday, day_before, day_before),
+        ('Últimos 7 dias', today - timedelta(days=6), today,
+         today - timedelta(days=13), today - timedelta(days=7)),
+        ('Últimos 30 dias', today - timedelta(days=29), today,
+         today - timedelta(days=59), today - timedelta(days=30)),
+    ]
+    cols = st.columns(4)
+    for col, (label, start, end, prev_start, prev_end) in zip(cols, periods):
+        current_value = period_revenue(start, end)
+        previous_value = period_revenue(prev_start, prev_end)
+        delta = variation(current_value, previous_value)
+        col.metric(label, brl(current_value),
+                   delta=delta if delta != 'Sem base anterior' else None)
+        if delta == 'Sem base anterior':
+            col.caption('Sem vendas no período anterior')
+        else:
+            col.caption(f'vs. {prev_start:%d/%m}–{prev_end:%d/%m}')
+    st.caption('Hoje ainda está em andamento; quedas em relação a dias completos devem ser interpretadas com cautela.')
+
     weekly_goal_panel(df, today, start_week, week_now)
     goal_panel(df, today)
     st.divider()
